@@ -1,0 +1,113 @@
+# Day 10 Reliability Final Report
+
+**Student:** Lê Quang Minh
+
+**Student ID:** 2A202600801
+
+## Architecture Summary
+
+```
+User Request
+    |
+    v
+[ReliabilityGateway]
+    +--> [Cache] -- HIT --> return cached response
+    |
+    +--> [CircuitBreaker: primary] --> Provider primary
+    |        | OPEN/error
+    |        v
+    +--> [CircuitBreaker: backup]  --> Provider backup
+    |        | OPEN/error
+    |        v
+    +--> [Static fallback]
+```
+
+## Configuration
+
+| Setting | Value | Reason |
+|---|---:|---|
+| failure_threshold | 3 | Opens after repeated failures without tripping on one transient error. |
+| reset_timeout_seconds | 2 | Fast recovery evidence while limiting retry storms. |
+| success_threshold | 1 | One successful half-open probe closes the breaker. |
+| cache TTL | 300 seconds | Covers the load-test window while limiting stale responses. |
+| similarity_threshold | 0.92 | Conservative semantic cache threshold to reduce false hits. |
+| load_test requests | 100 per scenario | Three scenarios produce 300 total requests. |
+
+## SLO Summary
+
+| SLI | SLO target | Actual value | Met? |
+|---|---|---:|---|
+| Availability | >= 99% | 99% | Yes |
+| Latency P95 | < 2500 ms | 311.3 ms | Yes |
+| Fallback success rate | >= 95% | 95.59% | Yes |
+| Cache hit rate | >= 10% | 68% | Yes |
+| Recovery time | < 5000 ms | not observed | N/A |
+
+## Metrics Summary
+
+| Metric | Value |
+|---|---:|
+| total_requests | 300 |
+| availability | 0.99 |
+| error_rate | 0.01 |
+| latency_p50_ms | 3.02 |
+| latency_p95_ms | 311.3 |
+| latency_p99_ms | 327.28 |
+| fallback_success_rate | 0.9559 |
+| cache_hit_rate | 0.68 |
+| circuit_open_count | 8 |
+| recovery_time_ms | None |
+| estimated_cost | 0.0368 |
+| estimated_cost_saved | 0.204 |
+
+## Cache Comparison
+
+| Metric | Without cache | With cache | Delta |
+|---|---:|---:|---:|
+| availability | 0.9433 | 0.99 | +0.0467 |
+| latency_p50_ms | 283.53 | 3.02 | -280.51 |
+| latency_p95_ms | 325.93 | 311.3 | -14.63 |
+| latency_p99_ms | 508.7 | 327.28 | -181.42 |
+| estimated_cost | 0.1268 | 0.0368 | -0.09 |
+| estimated_cost_saved | 0 | 0.204 | +0.204 |
+| cache_hit_rate | 0 | 0.68 | +0.68 |
+| circuit_open_count | 22 | 8 | -14 |
+
+## Chaos Scenarios
+
+| Scenario | Status |
+|---|---|
+| primary_timeout_100 | pass |
+| primary_flaky_50 | pass |
+| all_healthy | pass |
+
+## Redis Shared Cache
+
+Redis-backed cache shares responses across gateway instances using a hash per query and Redis EXPIRE for cleanup. In-memory cache is faster but cannot share state across multiple app instances.
+
+Evidence gathered locally with Docker Redis:
+
+```text
+pytest tests\test_redis_cache.py -q
+6 passed in 2.12s
+
+Shared state probe: ('shared report response', 1.0)
+Redis keys after Redis-backed chaos run: rl:cache:* entries present
+```
+
+## Failure Analysis
+
+The main remaining weakness is that circuit breaker state is local to each process. In production I would store breaker counters and open timestamps in Redis with atomic operations, then add per-tenant rate limiting and quality checks for semantic cache hits.
+
+## Verification
+
+```text
+pytest -q
+35 passed, 7 xpassed
+
+ruff check src tests scripts
+All checks passed!
+
+mypy src
+Success: no issues found in 8 source files
+```
